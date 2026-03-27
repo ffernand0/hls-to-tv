@@ -49,7 +49,11 @@ export default defineConfig({
       '/api/mitelefe': {
         target: 'https://santafe.mitelefe.com',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/mitelefe/, '')
+        rewrite: (path) => path.replace(/^\/api\/mitelefe/, ''),
+        headers: {
+          'Origin': 'https://santafe.mitelefe.com',
+          'Referer': 'https://santafe.mitelefe.com/telefe-santa-fe-en-vivo'
+        }
       },
       '/api/telefe-akamai': {
         target: 'https://telefecanal1.akamaized.net',

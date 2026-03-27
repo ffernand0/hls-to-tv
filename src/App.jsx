@@ -59,7 +59,7 @@ const CHANNELS = [
         // Apply Telefe local proxy
         return signedUrl.replace('https://telefecanal1.akamaized.net', '/api/telefe-akamai');
       }
-      return signedUrl;
+      throw new Error('No se recibió una URL válida de Telefe');
     }
   }
 ]
