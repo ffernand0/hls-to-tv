@@ -63,6 +63,11 @@ class HlsBuffer {
     this.segments = []
   }
 
+  _getSegIndex(filename) {
+    const match = filename.match(/(\d+)\.[^.]+$/)
+    return match ? parseInt(match[1]) : 0
+  }
+
   async tick() {
     if (Date.now() - this.lastRequest > 300000) { // 5 min inactivity
       if (this.isActive) this.stop()
@@ -97,7 +102,8 @@ class HlsBuffer {
           const segmentUrl = lines[i + 1]?.trim()
           if (!segmentUrl || segmentUrl.startsWith('#')) continue
           const filename = segmentUrl.split('?')[0].split('/').pop()
-          if (!this.segments.find(s => s.filename === filename)) {
+          const segIndex = this._getSegIndex(filename)
+          if (!this.segments.find(s => this._getSegIndex(s.filename) === segIndex)) {
             newSegments.push({ filename, duration: currentDuration, url: new URL(segmentUrl, resp.url).href })
           }
         }
@@ -115,17 +121,11 @@ class HlsBuffer {
       }))
 
       this.segments.sort((a, b) => {
-        // MATCH the last sequence of numbers in the filename
-        const matchA = a.filename.match(/(\d+)\.[^.]+$/)
-        const matchB = b.filename.match(/(\d+)\.[^.]+$/)
-        const nA = matchA ? parseInt(matchA[1]) : 0
-        const nB = matchB ? parseInt(matchB[1]) : 0
-        return nA - nB
+        return this._getSegIndex(a.filename) - this._getSegIndex(b.filename)
       })
 
       while (this.segments.length > 5 && this.segments.reduce((acc, s) => acc + s.duration, 0) > this.bufferSeconds) {
         this.segments.shift()
-        this.sequence++
       }
     } catch (err) { 
       console.error('[Buffer] Tick error:', err.message)
@@ -139,7 +139,12 @@ class HlsBuffer {
     const target = this.targetDuration || 4
     // Only show the last 10 segments to the player, even if we have more in memory
     const visibleSegments = this.segments.slice(-10)
-    const seq = this.sequence + (this.segments.length - visibleSegments.length)
+    
+    // Use the actual sequence number from the origin filename
+    let seq = this.sequence
+    if (visibleSegments.length > 0) {
+      seq = this._getSegIndex(visibleSegments[0].filename) || this.sequence
+    }
 
     let m3u = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${target}\n#EXT-X-MEDIA-SEQUENCE:${seq}\n\n`
     visibleSegments.forEach(seg => {
