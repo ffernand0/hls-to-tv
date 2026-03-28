@@ -30,10 +30,10 @@ class HlsBuffer {
 
   async start() {
     if (this.isActive) return
-    console.log(`[Buffer] Iniciando captura para Ahora Noticias...`)
+    console.log(`[Buffer] Iniciando captura para Ahora Noticias (Buffer: ${this.bufferSeconds/60}min)`)
     this.isActive = true
     this.tick()
-    this.interval = setInterval(() => this.tick(), 4000)
+    this.interval = setInterval(() => this.tick(), 2000) // Mas rápido para no perder segmentos
   }
 
   stop() {
@@ -52,14 +52,10 @@ class HlsBuffer {
 
     try {
       let resp = await fetch(this.sourceUrl)
-      if (!resp.ok) {
-        console.error(`[Buffer] Error al bajar el origen: ${resp.status}`)
-        return
-      }
+      if (!resp.ok) return
       let text = await resp.text()
-      // console.log(`[Buffer] Origen descargado, largo: ${text.length}`)
 
-      // Soporte para Master Playlists: Si detecta variantes, buscar el primer chunklist
+      // Soporte para Master Playlists
       if (text.includes('#EXT-X-STREAM-INF')) {
         const lines = text.split('\n')
         const chunklistPath = lines.find(l => l.trim().endsWith('.m3u8') && !l.startsWith('#'))
@@ -74,39 +70,66 @@ class HlsBuffer {
       
       const baseUrl = this.sourceUrl.substring(0, this.sourceUrl.lastIndexOf('/') + 1)
       const lines = text.split('\n')
-      let duration = 0
+      let currentDuration = 0
+      const newSegmentsFound = []
 
       for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('#EXT-X-TARGETDURATION:')) {
+          this.targetDuration = parseInt(lines[i].split(':')[1])
+        }
+        if (lines[i].startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
+          const sourceSeq = parseInt(lines[i].split(':')[1])
+          if (this.sequence === 0) this.sequence = sourceSeq
+        }
         if (lines[i].startsWith('#EXTINF:')) {
-          duration = parseFloat(lines[i].split(':')[1])
+          currentDuration = parseFloat(lines[i].split(':')[1].split(',')[0])
           const segmentUrl = lines[i + 1]?.trim()
-          if (!segmentUrl) continue
+          if (!segmentUrl || segmentUrl.startsWith('#')) continue
           
           const filename = segmentUrl.split('?')[0].split('/').pop()
           const fullUrl = segmentUrl.startsWith('http') ? segmentUrl : baseUrl + segmentUrl
 
           if (!this.segments.find(s => s.filename === filename)) {
-            const segResp = await fetch(fullUrl)
-            if (segResp.ok) {
-              const buffer = await segResp.arrayBuffer()
-              this.segments.push({
-                filename,
-                duration,
-                data: Buffer.from(buffer),
-                timestamp: Date.now()
-              })
-            }
+            newSegmentsFound.push({ filename, duration: currentDuration, url: fullUrl })
           }
         }
       }
 
-      // Cleanup: borrar lo que exceda el tiempo de buffer (pero dejar al menos 5 segmentos)
-      const now = Date.now()
+      // Descargar nuevos segmentos en paralelo
+      if (newSegmentsFound.length > 0) {
+        await Promise.all(newSegmentsFound.map(async (seg) => {
+          try {
+            const segResp = await fetch(seg.url)
+            if (segResp.ok) {
+              const buffer = await segResp.arrayBuffer()
+              this.segments.push({
+                filename: seg.filename,
+                duration: seg.duration,
+                data: Buffer.from(buffer),
+                timestamp: Date.now()
+              })
+              // console.log(`[Buffer] Segmento descargado: ${seg.filename}`)
+            }
+          } catch (e) {
+            console.error(`[Buffer] Error descargando segmento ${seg.filename}:`, e.message)
+          }
+        }))
+
+        // IMPORTANTE: Ordenar los segmentos por nombre/secuencia para que el m3u sea coherente
+        this.segments.sort((a, b) => {
+          // Extraemos el número del segmento si tiene formato media_w_123.ts
+          const numA = parseInt(a.filename.match(/\d+/) || 0)
+          const numB = parseInt(b.filename.match(/\d+/) || 0)
+          return numA - numB
+        })
+      }
+
+      // Limpieza del buffer
       while (this.segments.length > 5) {
         const totalBufferTime = this.segments.reduce((acc, s) => acc + s.duration, 0)
         if (totalBufferTime > this.bufferSeconds) {
           this.segments.shift()
-          this.sequence++ // Incrementar secuencia para que el reproductor sepa que nos movimos
+          this.sequence++ 
         } else {
           break
         }
@@ -119,11 +142,11 @@ class HlsBuffer {
   getManifest(hostUrl) {
     this.lastRequest = Date.now()
     if (this.segments.length === 0) {
-      console.log(`[Buffer] El manifiesto está vacío todavia (Segments: ${this.segments.length})`)
-      return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n"
+      console.log(`[Buffer] Esperando segmentos de origen...`)
+      return `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${this.targetDuration || 10}\n#EXT-X-MEDIA-SEQUENCE:0\n`
     }
-
-    let m3u = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n"
+    
+    let m3u = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${this.targetDuration || 10}\n`
     m3u += `#EXT-X-MEDIA-SEQUENCE:${this.sequence}\n\n`
 
     this.segments.forEach(seg => {
