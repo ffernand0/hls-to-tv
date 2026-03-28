@@ -51,9 +51,22 @@ class HlsBuffer {
     }
 
     try {
-      const resp = await fetch(this.sourceUrl)
+      let resp = await fetch(this.sourceUrl)
       if (!resp.ok) return
-      const text = await resp.text()
+      let text = await resp.text()
+
+      // Soporte para Master Playlists: Si detecta variantes, buscar el primer chunklist
+      if (text.includes('#EXT-X-STREAM-INF')) {
+        const lines = text.split('\n')
+        const chunklistPath = lines.find(l => l.trim().endsWith('.m3u8') && !l.startsWith('#'))
+        if (chunklistPath) {
+          const baseUrl = this.sourceUrl.substring(0, this.sourceUrl.lastIndexOf('/') + 1)
+          const newUrl = chunklistPath.trim().startsWith('http') ? chunklistPath.trim() : baseUrl + chunklistPath.trim()
+          resp = await fetch(newUrl)
+          if (!resp.ok) return
+          text = await resp.text()
+        }
+      }
       
       const baseUrl = this.sourceUrl.substring(0, this.sourceUrl.lastIndexOf('/') + 1)
       const lines = text.split('\n')
@@ -62,13 +75,13 @@ class HlsBuffer {
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].startsWith('#EXTINF:')) {
           duration = parseFloat(lines[i].split(':')[1])
-          const segmentUrl = lines[i + 1].trim()
+          const segmentUrl = lines[i + 1]?.trim()
+          if (!segmentUrl) continue
+          
           const filename = segmentUrl.split('?')[0].split('/').pop()
           const fullUrl = segmentUrl.startsWith('http') ? segmentUrl : baseUrl + segmentUrl
 
           if (!this.segments.find(s => s.filename === filename)) {
-            // New segment found! Download it
-            // console.log(`[Buffer] Descargando segmento: ${filename}`)
             const segResp = await fetch(fullUrl)
             if (segResp.ok) {
               const buffer = await segResp.arrayBuffer()
@@ -78,7 +91,6 @@ class HlsBuffer {
                 data: Buffer.from(buffer),
                 timestamp: Date.now()
               })
-              // console.log(`[Buffer] Cacheado: ${filename} (${this.segments.length} totales)`)
             }
           }
         }
@@ -133,15 +145,20 @@ const CHANNELS = {
     name: 'RTS Medios',
     resolve: async () => {
       const token = process.env.VITE_RTS_TOKEN
+      // Intentar obtener el stream de Restream con diferentes encabezados de compatibilidad
       const videoRes = await fetch(`https://player-backend.restream.io/public/videos/${token}`, {
         headers: {
-          'client-id': Math.random().toString(36).substring(2, 15),
-          'player-version': '0.25.5'
+          'client-id': `hls-tv-${Math.random().toString(36).substring(2, 6)}`,
+          'player-version': '0.25.5',
+          'Origin': 'https://player.restream.io',
+          'Referer': 'https://player.restream.io/'
         }
       })
-      if (!videoRes.ok) throw new Error('RTS Token Fail')
+      if (!videoRes.ok) {
+        throw new Error(`RTS Token Fail (Status: ${videoRes.status})`)
+      }
       const data = await videoRes.json()
-      return data.videoUrlHls
+      return data.videoUrlHls 
     }
   },
   telefe: {
@@ -238,5 +255,11 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`IP Red: http://${RASPBERRY_IP}:${PORT}`)
   console.log(`\n📜 Lista M3U para Android TV:`)
   console.log(`👉 http://${RASPBERRY_IP}:${PORT}/playlist.m3u`)
+  console.log(`-----------------------------------`)
+  console.log(`\x1b[32m💡 TIP: Para que inicie solo al prender la Pi:\x1b[0m`)
+  console.log(`1. sudo npm install -g pm2`)
+  console.log(`2. pm2 start server.js --name "hls-to-tv"`)
+  console.log(`3. pm2 startup (y copiar el comando que te da)`)
+  console.log(`4. pm2 save`)
   console.log(`-----------------------------------\n`)
 })
