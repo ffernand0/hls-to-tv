@@ -41,6 +41,7 @@ class HlsBuffer {
     this.segments = []
     this.lastRequest = Date.now()
     this.isActive = false
+    this.isFetching = false
     this.interval = null
     this.sequence = 0
     this.targetDuration = 4
@@ -67,17 +68,19 @@ class HlsBuffer {
       if (this.isActive) this.stop()
       return
     }
+    if (this.isFetching) return
+    this.isFetching = true
 
     try {
       let resp = await fetchWithRetry(this.sourceUrl, { headers: COMMON_HEADERS })
-      if (!resp.ok) return
+      if (!resp?.ok) return
       let text = await resp.text()
 
       if (text.includes('#EXT-X-STREAM-INF')) {
         const chunklistPath = text.split('\n').find(l => l.trim().endsWith('.m3u8') && !l.startsWith('#'))?.trim()
         if (chunklistPath) {
           resp = await fetchWithRetry(new URL(chunklistPath, this.sourceUrl).href, { headers: COMMON_HEADERS })
-          if (resp.ok) text = await resp.text()
+          if (resp?.ok) text = await resp.text()
         }
       }
 
@@ -100,7 +103,7 @@ class HlsBuffer {
         }
       }
 
-      for (const seg of newSegments) {
+      await Promise.allSettled(newSegments.map(async (seg) => {
         try {
           const sResp = await fetchWithRetry(seg.url, { headers: COMMON_HEADERS }, 2)
           if (sResp?.ok) {
@@ -109,11 +112,14 @@ class HlsBuffer {
             this.segments.push({ filename: seg.filename, duration: seg.duration, data: Buffer.from(data) })
           }
         } catch (e) { }
-      }
+      }))
 
       this.segments.sort((a, b) => {
-        const nA = parseInt(a.filename.match(/\d+/)?.[0] || 0)
-        const nB = parseInt(b.filename.match(/\d+/)?.[0] || 0)
+        // MATCH the last sequence of numbers in the filename
+        const matchA = a.filename.match(/(\d+)\.[^.]+$/)
+        const matchB = b.filename.match(/(\d+)\.[^.]+$/)
+        const nA = matchA ? parseInt(matchA[1]) : 0
+        const nB = matchB ? parseInt(matchB[1]) : 0
         return nA - nB
       })
 
@@ -121,7 +127,11 @@ class HlsBuffer {
         this.segments.shift()
         this.sequence++
       }
-    } catch (err) { }
+    } catch (err) { 
+      console.error('[Buffer] Tick error:', err.message)
+    } finally {
+      this.isFetching = false
+    }
   }
 
   getManifest(hostUrl) {
