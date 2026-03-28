@@ -52,8 +52,12 @@ class HlsBuffer {
 
     try {
       let resp = await fetch(this.sourceUrl)
-      if (!resp.ok) return
+      if (!resp.ok) {
+        console.error(`[Buffer] Error al bajar el origen: ${resp.status}`)
+        return
+      }
       let text = await resp.text()
+      // console.log(`[Buffer] Origen descargado, largo: ${text.length}`)
 
       // Soporte para Master Playlists: Si detecta variantes, buscar el primer chunklist
       if (text.includes('#EXT-X-STREAM-INF')) {
@@ -114,12 +118,11 @@ class HlsBuffer {
 
   getManifest(hostUrl) {
     this.lastRequest = Date.now()
-    if (this.segments.length === 0) return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n"
+    if (this.segments.length === 0) {
+      console.log(`[Buffer] El manifiesto está vacío todavia (Segments: ${this.segments.length})`)
+      return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXT-X-MEDIA-SEQUENCE:0\n"
+    }
 
-    // Calculamos el sequence basándonos en los segmentos eliminados (estimado simple)
-    // Para simplificar, usamos un contador que incremente con cada shift() o similar
-    // Pero aquí usaremos un timestamp o algo persistente si fuera necesario.
-    
     let m3u = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n"
     m3u += `#EXT-X-MEDIA-SEQUENCE:${this.sequence}\n\n`
 
@@ -144,8 +147,8 @@ const CHANNELS = {
   rts: {
     name: 'RTS Medios',
     resolve: async () => {
-      const token = process.env.VITE_RTS_TOKEN
-      // Intentar obtener el stream de Restream con diferentes encabezados de compatibilidad
+      // Fallback si el .env no se sincronizó a la Pi
+      const token = process.env.VITE_RTS_TOKEN || 'a8e0719241a74d64a7a31ce81740b490'
       const videoRes = await fetch(`https://player-backend.restream.io/public/videos/${token}`, {
         headers: {
           'client-id': `hls-tv-${Math.random().toString(36).substring(2, 6)}`,
@@ -154,9 +157,7 @@ const CHANNELS = {
           'Referer': 'https://player.restream.io/'
         }
       })
-      if (!videoRes.ok) {
-        throw new Error(`RTS Token Fail (Status: ${videoRes.status})`)
-      }
+      if (!videoRes.ok) throw new Error(`RTS Token Fail (Status: ${videoRes.status})`)
       const data = await videoRes.json()
       return data.videoUrlHls 
     }
